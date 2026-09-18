@@ -73,7 +73,7 @@ app.post('/api/voice/call', async (req, res) => {
       .replace(/'/g, '&apos;');
 
     // Build TwiML string inline — no callback URL needed, works on trial accounts
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-GB">
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="alice" language="en-GB">${safe}</Say></Response>`;
 
     console.log('       TwiML:', twiml.substring(0, 120) + '…');
 

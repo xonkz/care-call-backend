@@ -25,20 +25,16 @@ const app = express();
 const PORT = process.env.PORT ?? 3001;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-// cam
 
 app.use(cors());
 app.use(express.json());
 
-// Store the current text to speak (in-memory, single-user prototype)
-let currentText = '';
-
 // ── TwiML endpoint ────────────────────────────────────────────────────────────
 // Twilio calls this URL when the call connects.
-// <Say> reads the text directly — no audio file or geo permissions needed.
+// Text is passed as a query parameter so it survives server restarts.
 
 app.get('/twiml', (req, res) => {
-  const text = currentText || 'Hello. This is an automated care update. Thank you.';
+  const text = req.query.text || 'Hello. This is an automated care update. Thank you.';
   // Escape XML special characters
   const safe = text
     .replace(/&/g, '&amp;')
@@ -79,16 +75,14 @@ app.post('/api/voice/call', async (req, res) => {
   }
 
   try {
-    // Store the text so /twiml can serve it when Twilio calls back
-    currentText = text;
-
     console.log('[1/2] Placing Twilio call via <Say>…');
     console.log(`       To: ${to}`);
     console.log(`       From: ${process.env.TWILIO_FROM_NUMBER}`);
 
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-    const twimlUrl = `${process.env.PUBLIC_BASE_URL}/twiml`;
+    // Pass text as query param — survives server restarts, no in-memory state needed
+    const twimlUrl = `${process.env.PUBLIC_BASE_URL}/twiml?text=${encodeURIComponent(text)}`;
     console.log(`       TwiML URL: ${twimlUrl}`);
 
     const call = await client.calls.create({

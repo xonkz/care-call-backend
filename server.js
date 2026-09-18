@@ -69,7 +69,7 @@ app.post('/api/voice/call', async (req, res) => {
     console.log('[1/3] Calling Deepgram TTS…');
 
     const dgResponse = await fetch(
-      'https://api.deepgram.com/v1/speak?model=aura-athena-en',
+      'https://api.deepgram.com/v1/speak?model=aura-2-gemma-en',
       {
         method: 'POST',
         headers: {

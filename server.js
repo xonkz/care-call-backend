@@ -3,15 +3,12 @@
  *
  * Flow:
  *   1. Receive { to, text } from the MFE
- *   2. Use Twilio's <Say> verb to read the text directly over the call
- *      (no Deepgram or audio file needed — works on Twilio trial accounts)
+ *   2. Use Twilio's <Say> verb with inline TwiML (no callback URL needed)
  *   3. Return { success: true, callSid }
  *
  * Required env vars:
- *   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, PUBLIC_BASE_URL
- *
- * Optional (kept for future use when upgrading to paid Twilio):
- *   DEEPGRAM_API_KEY
+ *   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+ *   PUBLIC_BASE_URL (kept for future Deepgram upgrade)
  */
 
 import express from 'express';
@@ -24,98 +21,85 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ?? 3001;
 
-// ── Middleware ────────────────────────────────────────────────────────────────
-
 app.use(cors());
 app.use(express.json());
 
-// ── TwiML endpoint ────────────────────────────────────────────────────────────
-// Twilio calls this URL when the call connects.
-// Text is passed as a query parameter so it survives server restarts.
+// ── Health check ──────────────────────────────────────────────────────────────
 
-app.get('/twiml', (req, res) => {
-  const text = req.query.text || 'Hello. This is an automated care update. Thank you.';
-  // Escape XML special characters
-  const safe = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-
-  res.set('Content-Type', 'text/xml');
-  res.send(
-    `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Amy">${safe}</Say></Response>`
-  );
+app.get('/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    env: {
+      twilio_sid:   !!process.env.TWILIO_ACCOUNT_SID,
+      twilio_token: !!process.env.TWILIO_AUTH_TOKEN,
+      twilio_from:  process.env.TWILIO_FROM_NUMBER ?? 'NOT SET',
+      public_base_url: process.env.PUBLIC_BASE_URL ?? 'NOT SET',
+    },
+  });
 });
 
 // ── POST /api/voice/call ──────────────────────────────────────────────────────
+//cam
 
 app.post('/api/voice/call', async (req, res) => {
   const { to, text } = req.body ?? {};
 
   if (!to || !text) {
-    res.status(400).json({ error: 'Both "to" (phone number) and "text" fields are required.' });
-    return;
+    return res.status(400).json({
+      error: 'Both "to" (phone number) and "text" fields are required.',
+    });
   }
 
-  // Validate required env vars
-  const missing = [
-    'TWILIO_ACCOUNT_SID',
-    'TWILIO_AUTH_TOKEN',
-    'TWILIO_FROM_NUMBER',
-    'PUBLIC_BASE_URL',
-  ].filter((key) => !process.env[key]);
-
+  const missing = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER'].filter(
+    (k) => !process.env[k]
+  );
   if (missing.length > 0) {
-    res.status(500).json({
+    return res.status(500).json({
       error: `Missing environment variables: ${missing.join(', ')}. Check your .env file.`,
     });
-    return;
   }
 
   try {
-    console.log('[1/2] Placing Twilio call via <Say>…');
-    console.log(`       To: ${to}`);
+    console.log('[1/1] Placing Twilio call via inline TwiML <Say>…');
+    console.log(`       To:   ${to}`);
     console.log(`       From: ${process.env.TWILIO_FROM_NUMBER}`);
 
-    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    // Escape XML special characters
+    const safe = text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
 
-    // Pass text as query param — survives server restarts, no in-memory state needed
-    const twimlUrl = `${process.env.PUBLIC_BASE_URL}/twiml?text=${encodeURIComponent(text)}`;
-    console.log(`       TwiML URL: ${twimlUrl}`);
+    // Build TwiML string inline — no callback URL needed, works on trial accounts
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Amy">${safe}</Say></Response>`;
+
+    console.log('       TwiML:', twiml.substring(0, 120) + '…');
+
+    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
     const call = await client.calls.create({
       from: process.env.TWILIO_FROM_NUMBER,
       to,
-      url: twimlUrl,
+      twiml,   // inline TwiML — no URL fetch required
     });
 
-    console.log(`[2/2] Call placed! SID: ${call.sid}`);
+    console.log(`       Call SID: ${call.sid}`);
+    return res.json({ success: true, callSid: call.sid });
 
-    res.json({ success: true, callSid: call.sid });
   } catch (err) {
-    console.error('[/api/voice/call] Error:', err);
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' });
+    console.error('[/api/voice/call] Error:', err.message ?? err);
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Internal server error',
+    });
   }
-});
-
-// ── Health check ──────────────────────────────────────────────────────────────
-
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', env: {
-    twilio_sid: !!process.env.TWILIO_ACCOUNT_SID,
-    twilio_token: !!process.env.TWILIO_AUTH_TOKEN,
-    twilio_from: process.env.TWILIO_FROM_NUMBER,
-    public_base_url: process.env.PUBLIC_BASE_URL,
-  }});
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`\n🩺  Care Voice Caller backend running on http://localhost:${PORT}`);
-  console.log(`   POST /api/voice/call — place an outbound call`);
-  console.log(`   GET  /twiml          — TwiML endpoint (called by Twilio)`);
-  console.log(`   GET  /health         — check env vars\n`);
+  console.log(`   POST /api/voice/call  — place an outbound call`);
+  console.log(`   GET  /health          — check env vars\n`);
 });

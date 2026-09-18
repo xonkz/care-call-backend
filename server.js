@@ -16,6 +16,8 @@
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import dotenv from 'dotenv';
 import twilio from 'twilio';
 
@@ -23,6 +25,7 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
+const AUDIO_FILE = path.join(os.tmpdir(), 'summary.mp3');
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
@@ -33,15 +36,23 @@ app.use(express.json());
 // Twilio fetches this URL when the call connects.
 
 app.get('/audio/summary.mp3', (req, res) => {
-  const filePath = '/tmp/summary.mp3';
-
-  if (!fs.existsSync(filePath)) {
+  if (!fs.existsSync(AUDIO_FILE)) {
     res.status(404).json({ error: 'Audio file not found' });
     return;
   }
 
   res.set('Content-Type', 'audio/mpeg');
-  res.sendFile(filePath);
+  res.sendFile(AUDIO_FILE);
+});
+
+// ── TwiML endpoint ────────────────────────────────────────────────────────────
+// Twilio calls this URL when the call connects — it returns the play instruction.
+// Using a URL instead of inline twiml works on trial accounts too.
+
+app.get('/twiml', (req, res) => {
+  const audioUrl = `${process.env.PUBLIC_BASE_URL}/audio/summary.mp3`;
+  res.set('Content-Type', 'text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Play>${audioUrl}</Play></Response>`);
 });
 
 // ── POST /api/voice/call ──────────────────────────────────────────────────────
@@ -94,7 +105,8 @@ app.post('/api/voice/call', async (req, res) => {
     console.log('[2/3] Saving audio to /tmp/summary.mp3…');
 
     const audioArrayBuffer = await dgRes.arrayBuffer();
-    fs.writeFileSync('/tmp/summary.mp3', Buffer.from(audioArrayBuffer));
+    fs.writeFileSync(AUDIO_FILE, Buffer.from(audioArrayBuffer));
+    console.log(`       Saved to: ${AUDIO_FILE}`);
 
     const audioUrl = `${process.env.PUBLIC_BASE_URL}/audio/summary.mp3`;
     console.log(`       Audio URL: ${audioUrl}`);
@@ -104,10 +116,13 @@ app.post('/api/voice/call', async (req, res) => {
 
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
+    const twimlUrl = `${process.env.PUBLIC_BASE_URL}/twiml`;
+    console.log(`       TwiML URL: ${twimlUrl}`);
+
     const call = await client.calls.create({
       from: process.env.TWILIO_FROM_NUMBER,
       to,
-      twiml: `<Response><Play>${audioUrl}</Play></Response>`,
+      url: twimlUrl,
     });
 
     console.log(`      Call SID: ${call.sid}`);

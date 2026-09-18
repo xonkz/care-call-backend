@@ -26,7 +26,7 @@ app.use(express.json());
 
 // ── Health check ──────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => {
+app.all('/twiml', (req, res) => {
   res.json({
     status: 'ok',
     env: {

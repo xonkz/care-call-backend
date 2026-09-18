@@ -119,7 +119,7 @@ app.post('/api/voice/call', async (req, res) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`\n🩺  Care Voice Caller backend running on http://localhost:${PORT}`);
+console.log(`\n📞  Care Voice Caller backend running on http://localhost:${PORT}`);
   console.log(`   POST /api/voice/call       — place an outbound call (Deepgram TTS)`);
   console.log(`   GET  /audio/summary.mp3    — serve the generated MP3 to Twilio`);
   console.log(`   GET  /health               — check env vars\n`);

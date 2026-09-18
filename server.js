@@ -3,21 +3,19 @@
  *
  * Flow:
  *   1. Receive { to, text } from the MFE
- *   2. POST text → Deepgram TTS → receive MP3 audio buffer
- *   3. Save MP3 to /tmp/summary.mp3 and expose it on GET /audio/summary.mp3
- *   4. Use Twilio SDK to place an outbound call with <Play> TwiML pointing at the audio URL
- *   5. Return { success: true, callSid }
+ *   2. Use Twilio's <Say> verb to read the text directly over the call
+ *      (no Deepgram or audio file needed — works on Twilio trial accounts)
+ *   3. Return { success: true, callSid }
  *
- * Required env vars (copy .env.example → .env and fill them in):
- *   DEEPGRAM_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
- *   TWILIO_FROM_NUMBER, PUBLIC_BASE_URL
+ * Required env vars:
+ *   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, PUBLIC_BASE_URL
+ *
+ * Optional (kept for future use when upgrading to paid Twilio):
+ *   DEEPGRAM_API_KEY
  */
 
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
 import dotenv from 'dotenv';
 import twilio from 'twilio';
 
@@ -25,34 +23,33 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
-const AUDIO_FILE = path.join(os.tmpdir(), 'summary.mp3');
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 
 app.use(cors());
 app.use(express.json());
 
-// ── Audio file route ──────────────────────────────────────────────────────────
-// Twilio fetches this URL when the call connects.
-
-app.get('/audio/summary.mp3', (req, res) => {
-  if (!fs.existsSync(AUDIO_FILE)) {
-    res.status(404).json({ error: 'Audio file not found' });
-    return;
-  }
-
-  res.set('Content-Type', 'audio/mpeg');
-  res.sendFile(AUDIO_FILE);
-});
+// Store the current text to speak (in-memory, single-user prototype)
+let currentText = '';
 
 // ── TwiML endpoint ────────────────────────────────────────────────────────────
-// Twilio calls this URL when the call connects — it returns the play instruction.
-// Using a URL instead of inline twiml works on trial accounts too.
+// Twilio calls this URL when the call connects.
+// <Say> reads the text directly — no audio file or geo permissions needed.
 
 app.get('/twiml', (req, res) => {
-  const audioUrl = `${process.env.PUBLIC_BASE_URL}/audio/summary.mp3`;
+  const text = currentText || 'Hello. This is an automated care update. Thank you.';
+  // Escape XML special characters
+  const safe = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+
   res.set('Content-Type', 'text/xml');
-  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Play>${audioUrl}</Play></Response>`);
+  res.send(
+    `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Amy">${safe}</Say></Response>`
+  );
 });
 
 // ── POST /api/voice/call ──────────────────────────────────────────────────────
@@ -65,9 +62,8 @@ app.post('/api/voice/call', async (req, res) => {
     return;
   }
 
-  // Validate that all required env vars are set
+  // Validate required env vars
   const missing = [
-    'DEEPGRAM_API_KEY',
     'TWILIO_ACCOUNT_SID',
     'TWILIO_AUTH_TOKEN',
     'TWILIO_FROM_NUMBER',
@@ -82,37 +78,12 @@ app.post('/api/voice/call', async (req, res) => {
   }
 
   try {
-    // ── Step 1: Deepgram TTS ────────────────────────────────────────────────
-    console.log('[1/3] Calling Deepgram TTS…');
+    // Store the text so /twiml can serve it when Twilio calls back
+    currentText = text;
 
-    const dgRes = await fetch('https://api.deepgram.com/v1/speak?model=aura-asteria-en', {
-      method: 'POST',
-      headers: {
-        Authorization: `Token ${process.env.DEEPGRAM_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text }),
-    });
-
-    if (!dgRes.ok) {
-      const errBody = await dgRes.text();
-      console.error('[Deepgram] Error response:', errBody);
-      res.status(502).json({ error: `Deepgram TTS failed (${dgRes.status}): ${errBody}` });
-      return;
-    }
-
-    // ── Step 2: Save MP3 to /tmp ────────────────────────────────────────────
-    console.log('[2/3] Saving audio to /tmp/summary.mp3…');
-
-    const audioArrayBuffer = await dgRes.arrayBuffer();
-    fs.writeFileSync(AUDIO_FILE, Buffer.from(audioArrayBuffer));
-    console.log(`       Saved to: ${AUDIO_FILE}`);
-
-    const audioUrl = `${process.env.PUBLIC_BASE_URL}/audio/summary.mp3`;
-    console.log(`       Audio URL: ${audioUrl}`);
-
-    // ── Step 3: Twilio outbound call ────────────────────────────────────────
-    console.log('[3/3] Placing Twilio call…');
+    console.log('[1/2] Placing Twilio call via <Say>…');
+    console.log(`       To: ${to}`);
+    console.log(`       From: ${process.env.TWILIO_FROM_NUMBER}`);
 
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
@@ -125,11 +96,11 @@ app.post('/api/voice/call', async (req, res) => {
       url: twimlUrl,
     });
 
-    console.log(`      Call SID: ${call.sid}`);
+    console.log(`[2/2] Call placed! SID: ${call.sid}`);
 
     res.json({ success: true, callSid: call.sid });
   } catch (err) {
-    console.error('[/api/voice/call] Unexpected error:', err);
+    console.error('[/api/voice/call] Error:', err);
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal server error' });
   }
 });
@@ -137,13 +108,19 @@ app.post('/api/voice/call', async (req, res) => {
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', env: {
+    twilio_sid: !!process.env.TWILIO_ACCOUNT_SID,
+    twilio_token: !!process.env.TWILIO_AUTH_TOKEN,
+    twilio_from: process.env.TWILIO_FROM_NUMBER,
+    public_base_url: process.env.PUBLIC_BASE_URL,
+  }});
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`\n🩺  Care Voice Caller backend running on http://localhost:${PORT}`);
-  console.log(`   POST /api/voice/call   — place an outbound call`);
-  console.log(`   GET  /audio/summary.mp3 — serve the generated MP3 to Twilio\n`);
+  console.log(`   POST /api/voice/call — place an outbound call`);
+  console.log(`   GET  /twiml          — TwiML endpoint (called by Twilio)`);
+  console.log(`   GET  /health         — check env vars\n`);
 });
